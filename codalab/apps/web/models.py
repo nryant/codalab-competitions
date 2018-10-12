@@ -1404,7 +1404,7 @@ class CompetitionSubmission(ChaHubSaveMixin, models.Model):
             return None
 
     def get_chahub_is_valid(self):
-        return self.phase.competition.published
+        return self.pk and self.phase.competition.published
 
     def get_chahub_endpoint(self):
         return "submissions/"

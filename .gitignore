@@ -37,6 +37,7 @@ venv/
 *.pyc
 **/build/**
 **/dist/**
+.pytest_cache
 
 # Editor backup files #
 #######################
