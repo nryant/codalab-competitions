@@ -2406,17 +2406,11 @@ def add_submission_to_leaderboard(submission):
 
     logger.info('Adding submission %s to leaderboard %s' % (submission, lb))
 
-    # Currently we only allow one submission into the leaderboard although the leaderboard
-    # is setup to accept multiple submissions from the same participant.
-    if submission.team is not None:
-        # Select all submissions from the team
-        entries = PhaseLeaderBoardEntry.objects.filter(board=lb, result__team=submission.team)
-    else:
-        # Select all submissions from the user
-        entries = PhaseLeaderBoardEntry.objects.filter(board=lb, result__participant=submission.participant)
-
+    # Allow *ONLY* latest submission for each combo of (team name, system name).
+    entries = PhaseLeaderBoardEntry.objects.filter(board=lb, result__team_name=submission.team_name, result__method_name=submission.method_name)
     for entry in entries:
         entry.delete()
+
     lbe, created = PhaseLeaderBoardEntry.objects.get_or_create(board=lb, result=submission)
     return lbe, created
 
