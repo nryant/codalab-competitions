@@ -910,6 +910,8 @@ class CompetitionCompleteResultsDownload(View):
             headers.append('Date')
             headers.append('Filename')
             headers.append('Is on leaderboard?')
+            headers.append('MethodName')
+            headers.append('TeamName')
             csvwriter.writerow(headers)
             csvwriter.writerow(sub_headers)
 
@@ -930,9 +932,10 @@ class CompetitionCompleteResultsDownload(View):
                     row.append(submission.description)
                     row.append(submission.submitted_at)
                     row.append(submission.get_filename())
-
                     is_on_leaderboard = submission.pk in leader_board_entries
                     row.append(is_on_leaderboard)
+                    row.append(submission.method_name)
+                    row.append(submission.team_name)
 
                     row = [unicode(r).encode("utf-8") for r in row]
                     csvwriter.writerow(row)
