@@ -2407,7 +2407,12 @@ def add_submission_to_leaderboard(submission):
     logger.info('Adding submission %s to leaderboard %s' % (submission, lb))
 
     # Allow *ONLY* latest submission for each combo of (team name, system name).
-    entries = PhaseLeaderBoardEntry.objects.filter(board=lb, result__team_name=submission.team_name, result__method_name=submission.method_name)
+    if submission.team is not None:
+        # Drawing team name from team rather than metadata is more secure.
+        entries = PhaseLeaderBoardEntry.objects.filter(board=lb, result__team=submission.team, result__method_name=submission.method_name)
+    else:
+        # Case 2: No team specified, so default to user.
+        entries = PhaseLeaderBoardEntry.objects.filter(board=lb, result__participant=submission.participant, result__method_name=submission.method_name)
     for entry in entries:
         entry.delete()
 

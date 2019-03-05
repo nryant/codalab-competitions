@@ -790,8 +790,8 @@ class CompetitionResultsPage(TemplateView):
                     sub = models.CompetitionSubmission.objects.get(pk=scoredata['id'])
                     scoredata['date'] = sub.submitted_at
                     scoredata['count'] = sub.phase.submissions.filter(participant=sub.participant).count()
-                    # Always get team name from metadata.
-                    scoredata['team_name'] = sub.team_name
+                    if sub.team:
+                        scoredata['team_name'] = sub.team.name
                     scoredata['method_name'] = sub.method_name
 
             user = self.request.user
