@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import StringIO
+import os
 import traceback
 
 import requests
@@ -15,19 +16,19 @@ import zipfile
 from urllib import pathname2url
 
 from django.core.exceptions import ObjectDoesNotExist
+from django.utils import timezone
 from yaml.representer import SafeRepresenter
 from zipfile import ZipFile
 from collections import OrderedDict
 
 import sys
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from boto.s3.connection import S3Connection
 from celery import task
 from celery.app import app_or_default
 from celery.exceptions import SoftTimeLimitExceeded
 from django.conf import settings
-from django.contrib.sites.models import get_current_site
 from django.core.files.base import ContentFile
 from django.core.mail import get_connection, EmailMultiAlternatives, send_mail
 from django.db import transaction
@@ -36,7 +37,9 @@ from django.template import Context
 from django.template.loader import render_to_string
 from django.contrib.sites.models import Site
 
+from apps.authenz.models import ClUser
 from apps.chahub.models import ChaHubSaveMixin
+from apps.chahub.utils import send_to_chahub
 from apps.jobs.models import (Job,
                               run_job_task,
                               JobTaskResult,
@@ -61,12 +64,13 @@ from apps.web.models import (add_submission_to_leaderboard,
                              SubmissionScore,
                              SubmissionScoreDef,
                              CompetitionSubmissionMetadata, BundleStorage, SubmissionResultGroup,
-                             SubmissionScoreDefGroup, PhaseLeaderBoardEntry, PhaseLeaderBoard)
+                             SubmissionScoreDefGroup, OrganizerDataSet, CompetitionParticipant, ParticipantStatus,
+                             PhaseLeaderBoardEntry, PhaseLeaderBoard)
 from apps.coopetitions.models import DownloadRecord
 
 import time
 # import cProfile
-from apps.web.utils import inheritors
+from apps.web.utils import inheritors, push_submission_to_leaderboard_if_best
 from codalab.azure_storage import make_blob_sas_url
 
 from apps.web import models
@@ -622,39 +626,7 @@ def update_submission(job_id, args, secret):
                     logger.info("Force submission added submission to leaderboard (submission_id=%s)", submission.id)
 
                 if submission.phase.force_best_submission_to_leaderboard:
-                    # In this phase get the submission score from the column with the lowest ordering
-                    score_def = submission.get_default_score_def()
-                    lb = PhaseLeaderBoard.objects.get(phase=submission.phase)
-
-                    # Get our leaderboard entries: Related Submissions should be in our participant's submissions,
-                    # and the leaderboard should be the one attached to our phase
-                    entries = PhaseLeaderBoardEntry.objects.filter(result__in=submission.participant.submissions.all(), board=lb)
-                    submissions = [(entry.result, entry.result.get_default_score()) for entry in entries]
-                    sorted_list = sorted(submissions, key=lambda x: x[1])
-                    if sorted_list:
-                        top_sub, top_score = sorted_list[0]
-                        score_value = submission.get_default_score()
-                        if score_def.sorting == 'asc':
-                            # The first value in ascending is the top score, 1 beats 3
-                            if score_value >= top_score:
-                                add_submission_to_leaderboard(submission)
-                                logger.info("Force best submission added submission to leaderboard in ascending order "
-                                             "(submission_id=%s, top_score=%s, score=%s)", submission.id, top_score,
-                                             score_value)
-                        elif score_def.sorting == 'desc':
-                            # The last value in descending is the top score, 3 beats 1
-                            if score_value <= top_score:
-                                add_submission_to_leaderboard(submission)
-                                logger.info(
-                                    "Force best submission added submission to leaderboard in descending order "
-                                    "(submission_id=%s, top_score=%s, score=%s)", submission.id, top_score, score_value)
-                    else:
-                        add_submission_to_leaderboard(submission)
-                        logger.info(
-                            "Force best submission added submission: {0} with score: {1} to leaderboard: {2}"
-                            " because no submission was present".format(
-                                submission, submission.get_default_score(), lb)
-                        )
+                    push_submission_to_leaderboard_if_best(submission)
                 result = Job.FINISHED
 
                 if submission.participant.user.email_on_submission_finished_successfully:
@@ -838,6 +810,7 @@ def _send_mass_html_mail(datatuple, fail_silently=False, user=None, password=Non
 
 @task(queue='site-worker')
 def send_mass_email(competition_pk, body=None, subject=None, from_email=None, to_emails=None):
+    logger.info("Sending emails to: {}".format(to_emails))
     competition = Competition.objects.get(pk=competition_pk)
     context = Context({"competition": competition, "body": body, "site": Site.objects.get_current()})
     text = render_to_string("emails/notifications/participation_organizer_direct_email.txt", context)
@@ -846,6 +819,7 @@ def send_mass_email(competition_pk, body=None, subject=None, from_email=None, to
     mail_tuples = ((subject, text, html, from_email, [e]) for e in to_emails)
 
     _send_mass_html_mail(mail_tuples)
+    logger.info("Finished sending emails.")
 
 
 @task(queue='site-worker')
@@ -876,6 +850,33 @@ def do_chahub_retries(limit=None):
         for instance in needs_retry:
             # Saving forces chahub update
             instance.save(force_to_chahub=True)
+
+
+@task(queue='site-worker')
+def send_chahub_general_stats():
+    if settings.DATABASES.get('default').get('ENGINE') == 'django.db.backends.postgresql_psycopg2':
+        # Only Postgres supports 'distinct', so if we can use the database, if not use some Python Set magic
+        organizer_count = Competition.objects.all().distinct('creator').count()
+    else:
+        users_with_competitions = list(ClUser.objects.filter(competitioninfo_creator__isnull=False))
+        user_set = set(users_with_competitions)
+        # Only unique users that have competitions
+        organizer_count = len(user_set)
+    approved_status = ParticipantStatus.objects.get(codename=ParticipantStatus.APPROVED)
+    data = {
+        'competition_count': Competition.objects.filter(published=True).count(),
+        'dataset_count': OrganizerDataSet.objects.count(),
+        'participant_count': CompetitionParticipant.objects.filter(status=approved_status).count(),
+        'submission_count': CompetitionSubmission.objects.count(),
+        'user_count': ClUser.objects.count(),
+        'organizer_count': organizer_count
+    }
+
+    try:
+        send_to_chahub('producers/{}/'.format(settings.CHAHUB_PRODUCER_ID), data, update=True)
+    except requests.ConnectionError:
+        logger.info("There was a problem reaching Chahub, it is currently offline. Re-trying in 5 minutes.")
+        send_chahub_general_stats.apply_async(eta=timezone.now() + timedelta(minutes=5))
 
 
 @task(queue='site-worker')
