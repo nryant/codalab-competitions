@@ -513,7 +513,7 @@ class Competition(ChaHubSaveMixin, models.Model):
                     file_args["s3_file"] = submission.s3_file
                 else:
                     file_args["file"] = submission.file
-                    
+
                 new_submission = CompetitionSubmission(
                     participant=participant,
                     phase=next_phase,
@@ -576,6 +576,11 @@ class Competition(ChaHubSaveMixin, models.Model):
                         sub_headers.append(sub['label'].encode('utf-8'))
                 else:
                     headers.append(header['label'].encode('utf-8'))
+            headers.append('Date')
+            if self.enable_per_submission_metadata:
+                headers.append('MethodName')
+            if self.enable_teams:
+                headers.append('TeamName')
             csvwriter.writerow(['submission_pk',] + headers)
             if sub_headers != ['']:
                 csvwriter.writerow(sub_headers)
@@ -585,14 +590,15 @@ class Competition(ChaHubSaveMixin, models.Model):
                     csvwriter.writerow(["No data available"])
                 else:
                     for pk, scores in group['scores']:
+                        submission = CompetitionSubmission.objects.get(pk=scores['id'])                    
                         if phase.competition.anonymous_leaderboard:
                             if phase.competition.creator.username == request.user.username or \
                             request.user in phase.competition.admins.all():
-                                row = [scores['username']] + ([''] * (len(ordering) + 1)) # Appending list
+                                row = [scores['username']] + ([''] * (len(ordering))) # Appending list
                             else:
-                                row = ['Anonymous'] + ([''] * (len(ordering) + 1)) # Appending list
+                                row = ['Anonymous'] + ([''] * (len(ordering))) # Appending list
                         else:
-                            row = [scores['username']] + ([''] * (len(ordering) + 1)) # Appending list
+                            row = [scores['username']] + ([''] * (len(ordering))) # Appending list
                         for v in scores['values']:
                             if 'rnk' in v:
                                 # Based on the header label insert the score into the proper column
@@ -600,6 +606,17 @@ class Competition(ChaHubSaveMixin, models.Model):
                                 row[ordering[v['name']] + 1] = "%s (%s)" % (v['val'], v['rnk'])
                             else:
                                 row[ordering[v['name']] + 1] = "%s (%s)" % (v['val'], v['hidden_rnk'])
+                        row.append(submission.submitted_at)
+                        if self.enable_per_submission_metadata:
+                            row.append(submission.method_name)
+                        if self.enable_teams:
+                            team_name = ''
+                            if submission.team is not None:
+                                team_name = submission.team.name
+                            else:
+                                user = submission.participant.user
+                                team_name = user.team_name
+                            row.append(team_name)
                         csvwriter.writerow([scores['id'],] + row)
             except:
                 csvwriter.writerow(["Exception parsing scores!"])
@@ -2406,17 +2423,16 @@ def add_submission_to_leaderboard(submission):
 
     logger.info('Adding submission %s to leaderboard %s' % (submission, lb))
 
-    # Currently we only allow one submission into the leaderboard although the leaderboard
-    # is setup to accept multiple submissions from the same participant.
+    # Allow *ONLY* latest submission for each combo of (team name, system name).
     if submission.team is not None:
-        # Select all submissions from the team
-        entries = PhaseLeaderBoardEntry.objects.filter(board=lb, result__team=submission.team)
+        # Drawing team name from team rather than metadata is more secure.
+        entries = PhaseLeaderBoardEntry.objects.filter(board=lb, result__team=submission.team, result__method_name=submission.method_name)
     else:
-        # Select all submissions from the user
-        entries = PhaseLeaderBoardEntry.objects.filter(board=lb, result__participant=submission.participant)
-
+        # Case 2: No team specified, so default to user.
+        entries = PhaseLeaderBoardEntry.objects.filter(board=lb, result__participant=submission.participant, result__method_name=submission.method_name)
     for entry in entries:
         entry.delete()
+
     lbe, created = PhaseLeaderBoardEntry.objects.get_or_create(board=lb, result=submission)
     return lbe, created
 

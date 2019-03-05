@@ -792,6 +792,7 @@ class CompetitionResultsPage(TemplateView):
                     scoredata['count'] = sub.phase.submissions.filter(participant=sub.participant).count()
                     if sub.team:
                         scoredata['team_name'] = sub.team.name
+                    scoredata['method_name'] = sub.method_name
 
             user = self.request.user
 
@@ -910,6 +911,10 @@ class CompetitionCompleteResultsDownload(View):
             headers.append('Date')
             headers.append('Filename')
             headers.append('Is on leaderboard?')
+            if competition.enable_per_submission_metadata:
+                headers.append('MethodName')
+            if competition.enable_teams:
+                headers.append('TeamName')
             csvwriter.writerow(headers)
             csvwriter.writerow(sub_headers)
 
@@ -926,14 +931,21 @@ class CompetitionCompleteResultsDownload(View):
                             row.append("%s (%s)" % (v['val'], v['rnk']))
                         else:
                             row.append("%s (%s)" % (v['val'], v['hidden_rnk']))
-
                     row.append(submission.description)
                     row.append(submission.submitted_at)
                     row.append(submission.get_filename())
-
                     is_on_leaderboard = submission.pk in leader_board_entries
                     row.append(is_on_leaderboard)
-
+                    if competition.enable_per_submission_metadata:
+                        row.append(submission.method_name)
+                    if competition.enable_teams:
+                        team_name = ''
+                        if submission.team is not None:
+                            team_name = submission.team.name
+                        else:
+                            user = submission.participant.user
+                            team_name = user.team_name
+                        row.append(team_name)
                     row = [unicode(r).encode("utf-8") for r in row]
                     csvwriter.writerow(row)
 
